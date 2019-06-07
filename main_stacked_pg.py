@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 
 from dataset import BlockFrameDataset
-from model_stacked import EncoderDecoder
+from model_stacked_pg import EncoderDecoder
 from scipy.misc import imresize
 
 KTH_PATH = '/scratch/eecs-share/dinkinst/kth/data/'
@@ -32,6 +32,7 @@ def load_args():
     parser.add_argument('--lr', default=0.0001, type=float)
     parser.add_argument('--output', default=4096, type=int)
     parser.add_argument('--dataset', default='kth', type=str)
+    parser.add_argument('--steps', default=2*1e5, type=int)
     parser.add_argument('--start_resolution', default=4, type=int)
     parser.add_argument('--max_resolution', default=128, type=int)
 
@@ -131,7 +132,8 @@ def main(args):
 
     start_resolution = args.start_resolution
     max_resolution = args.max_resolution
-    train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=max_resolution)
+    train_steps = args.steps
+    train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=start_resolution)
 
     # test_tens = next(iter(train_loader))['instance'][0, :, :, :, :].transpose(0, 1)
     # print(test_tens.shape)
@@ -139,66 +141,91 @@ def main(args):
     # print(next(iter(train_loader))['instance'][0, :, 0, :, :].shape)
     train_loss = []
     dev_loss = []
-    for epoch in range(args.epochs):
-        epoch_loss = 0
-        batch_num = 0
-        for item in train_loader:
-            #label = item['label']
-            item = item['instance'].cuda()
+    current_resolution = start_resolution
+    fade_alpha = args.batch_size/args.steps
 
-            frames_processed = 0
-            batch_loss = 0
+    # loop until resolution hits max and trains on it
+    while current_resolution <= max_resolution:
+        print('Current resolution {}'.format(current_resolution))
+        epoch = 0
+        steps = 0
+        while steps < train_steps:
+            epoch_loss = 0
+            batch_num = 0
+            for item in train_loader:
+                #label = item['label']
+                item = item['instance'].cuda()
 
-            # fit a whole batch for all the different milliseconds
-            for i in range(10, num_frames-1):
-                for j in range(i+1, num_frames):
-                    start_frame = i - 10
-                    network.zero_grad()
-                    frame_diff = j - i
-                    time_delta = torch.tensor(frame_diff * ms_per_frame).float().repeat(args.batch_size).cuda()
-                    time_delta.requires_grad = True
+                frames_processed = 0
+                batch_loss = 0
 
-                    seq = item[:, :, start_frame:i, :, :]
-                    seq = seq.squeeze()
-                    seq.requires_grad = True
+                # fit a whole batch for all the different milliseconds
+                for i in range(10, num_frames-1):
+                    for j in range(i+1, num_frames):
+                        start_frame = i - 10
+                        network.zero_grad()
+                        frame_diff = j - i
+                        time_delta = torch.tensor(frame_diff * ms_per_frame).float().repeat(args.batch_size).cuda()
+                        time_delta.requires_grad = True
 
-                    seq_targ = item[:, :, j, :, :]
+                        seq = item[:, :, start_frame:i, :, :]
+                        seq = seq.squeeze()
+                        seq.requires_grad = True
 
-                    seq_targ.requires_grad = False
+                        seq_targ = item[:, :, j, :, :]
 
-                    assert seq.requires_grad and time_delta.requires_grad, 'No Gradients'
+                        seq_targ.requires_grad = False
 
-                    outputs = network(seq, time_delta)
-                    error = criterion(outputs, seq_targ)
-                    error.backward()
-                    optimizer.step()
+                        assert seq.requires_grad and time_delta.requires_grad, 'No Gradients'
 
-                    batch_loss += error.cpu().item()
-                    frames_processed += 1
+                        outputs = network(seq, time_delta)
+                        print(outputs.shape)
+                        error = criterion(outputs, seq_targ)
+                        error.backward()
+                        optimizer.step()
 
-                    if i == 10 and batch_num % 10 == 0 and epoch % 100 == 0:
-                        save_image(outputs, IMG_PATH+'train_output_batch_{}_iter_{}_epoch_{}.png'.format(batch_num, j, epoch))
+                        batch_loss += error.cpu().item()
+                        frames_processed += 1
 
-            batch_num += 1
-            epoch_loss += batch_loss
-            print('Epoch {} Batch #{} Total Error {}'.format(epoch, batch_num, batch_loss))
-        print('\nEpoch {} Total Loss {} Scaled Loss {}\n'.format(epoch, epoch_loss, epoch_loss/frames_processed))
-        train_loss.append(epoch_loss)
-        if epoch % 10 == 0:
-            torch.save(network.state_dict(), KTH_PATH+str('/model_new_{}_stacked.pth'.format(epoch)))
-            torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_new_{}_stacked.pth'.format(epoch)))
+                        if i == 10 and batch_num % 10 == 0 and epoch % 100 == 0:
+                            save_image(outputs, IMG_PATH+'train_output_batch_{}_iter_{}_epoch_{}.png'.format(batch_num, j, epoch))
 
-        dev_loss.append(eval_model(network, dev_loader, epoch))
-        network.train()
+                batch_num += 1
+                epoch_loss += batch_loss
+                print('Epoch {} Batch #{} Total Error {}'.format(epoch, batch_num, batch_loss))
+                steps += args.batch_size
+                if steps >= train_steps:
+                    break
+                stable, _ = network.get_stability()
+                if not stable:
+                    net_alpha, _ = network.get_alpha()
+                    network.update_alpha(net_alpha + fade_alpha)
+            print('\nEpoch {} Total Loss {} Scaled Loss {}\n'.format(epoch, epoch_loss, epoch_loss/frames_processed))
+            stable, _ = network.get_stability()
+            if stable:
+                _ = eval_model(network, dev_loader, epoch)
+            network.train()
+            epoch += 1
 
-    plt.plot(range(args.epochs), train_loss)
-    plt.grid()
-    plt.savefig('/scratch/eecs-share/dinkinst/kth/img_stacked/loss_train.png', dpi=64)
-    plt.close('all')
-    plt.plot(range(args.epochs), dev_loss)
-    plt.grid()
-    plt.savefig('/scratch/eecs-share/dinkinst/kth/img_stacked/loss_dev.png', dpi=64)
-    plt.close('all')
+        stable, _ = network.get_stability()
+        print('Saving models...\n')
+        #torch.save(network.state_dict(), KTH_PATH+str('/model_pg_{}_{}.pth'.format(current_resolution, str(stable))))
+        #torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_pg_{}_{}.pth'.format(current_resolution, str(stable))))
+        if stable:
+            if current_resolution >= max_resolution:
+                break
+            print('Fading in next layer...\n')
+            network.update_stability()
+            network.update_alpha(fade_alpha)
+            network.update_level()
+            current_resolution, _ = network.get_resolution()
+            train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=current_resolution)
+        else:
+            print('Fading completed...\n')
+            network.update_stability()
+            network.update_alpha(1.0)          
+            
+            
 
 
 
