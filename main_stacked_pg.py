@@ -1,5 +1,10 @@
 # 1 frame every 40ms
 
+# right now just doing 1 frame prediction
+# easy to modify to do up to 5 horizon (from 10 frames)
+
+
+
 import numpy as np
 import torch
 from torch import nn
@@ -29,10 +34,10 @@ def load_args():
     parser.add_argument('--hidden_latent', default=4096, type=int)
     parser.add_argument('--time_latent', default=64, type=int)
     parser.add_argument('--latent_size', default=4096, type=int)
-    parser.add_argument('--lr', default=0.0001, type=float)
+    parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--output', default=4096, type=int)
     parser.add_argument('--dataset', default='kth', type=str)
-    parser.add_argument('--steps', default=2*1e5, type=int)
+    parser.add_argument('--steps', default=20000, type=int)
     parser.add_argument('--start_resolution', default=4, type=int)
     parser.add_argument('--max_resolution', default=128, type=int)
 
@@ -78,7 +83,7 @@ def fetch_kth_data(args, shape=None):
     return train_loader, dev_loader, test_loader
 
 
-def eval_model(network, dev_loader, epoch):
+def eval_model(network, dev_loader, resolution, epoch):
     network.eval()
     num_frames = 15
     ms_per_frame = 40
@@ -110,13 +115,13 @@ def eval_model(network, dev_loader, epoch):
                     error = criterion(outputs, seq_targ)
                     batch_loss += error.cpu().item()
                     frames_processed += 1
-                    if i == 10 and batch_num % 10 == 0 and epoch % 100 == 0:
-                        save_image(outputs, IMG_PATH+'dev_output_batch_{}_iter_{}_epoch_{}.png'.format(batch_num, j, epoch))
+                    if i == 10 and batch_num % 10 == 0 and epoch % 5 == 0:
+                        save_image(outputs, IMG_PATH+'dev_output_res_{}_batch_{}_epoch_{}.png'.format(resolution, batch_num, epoch))
 
             batch_num += 1
-            print('Dev Batch #{} Total Error {}'.format(batch_num, batch_loss))
+            print('Dev: Resolution {}, Epoch {}, Batch #{}, Total Error {}'.format(resolution, epoch, batch_num, batch_loss))
             dev_loss += batch_loss
-        print('\nDev Total {} Scaled {}\n'.format(dev_loss, dev_loss/frames_processed))
+        print('\nDev: Resolution {}, Epoch {}, Total {}, Scaled {}\n'.format(resolution, epoch, dev_loss, dev_loss/frames_processed))
     return dev_loss
 
 
@@ -127,19 +132,19 @@ def main(args):
     ms_per_frame = 40
 
     network = EncoderDecoder(args).cuda()
-    optimizer = torch.optim.Adam(network.parameters(), lr=args.lr, betas=(0.9, 0.99))
+    optimizer = torch.optim.Adam(network.parameters(), lr=args.lr, betas=(0.0, 0.9))
     criterion = nn.MSELoss()
 
     start_resolution = args.start_resolution
     max_resolution = args.max_resolution
-    train_steps = args.steps
+    train_steps = int(args.steps)
     train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=start_resolution)
 
     # test_tens = next(iter(train_loader))['instance'][0, :, :, :, :].transpose(0, 1)
     # print(test_tens.shape)
     # save_image(test_tens, './img/test_tens.png')
     # print(next(iter(train_loader))['instance'][0, :, 0, :, :].shape)
-    train_loss = []
+    resolution_loss = []
     dev_loss = []
     current_resolution = start_resolution
     fade_alpha = args.batch_size/args.steps
@@ -147,8 +152,11 @@ def main(args):
     # loop until resolution hits max and trains on it
     while current_resolution <= max_resolution:
         print('Current resolution {}'.format(current_resolution))
+        stable, _ = network.get_stability()
         epoch = 0
         steps = 0
+        curr_res_loss = 0
+        curr_res_dev_loss = 0
         while steps < train_steps:
             epoch_loss = 0
             batch_num = 0
@@ -179,39 +187,44 @@ def main(args):
                         assert seq.requires_grad and time_delta.requires_grad, 'No Gradients'
 
                         outputs = network(seq, time_delta)
-                        print(outputs.shape)
+                        #print(outputs.shape)
                         error = criterion(outputs, seq_targ)
                         error.backward()
                         optimizer.step()
 
                         batch_loss += error.cpu().item()
                         frames_processed += 1
-
-                        if i == 10 and batch_num % 10 == 0 and epoch % 100 == 0:
-                            save_image(outputs, IMG_PATH+'train_output_batch_{}_iter_{}_epoch_{}.png'.format(batch_num, j, epoch))
+                        #stable, _ = network.get_stability()
+                        if i == 10 and batch_num % 20 == 0 and epoch % 5 == 0:
+                            save_image(outputs, IMG_PATH+'train_output_res_{}_batch_{}_epoch_{}_stable_{}.png'.format(current_resolution, batch_num, epoch, str(stable)))
 
                 batch_num += 1
                 epoch_loss += batch_loss
-                print('Epoch {} Batch #{} Total Error {}'.format(epoch, batch_num, batch_loss))
+                #stable, _ = network.get_stability()
+                print('Training: Resolution {}, Stable {}, Epoch {}, Batch #{}, Total Error {}'.format(current_resolution, str(stable), epoch, batch_num, batch_loss))
                 steps += args.batch_size
                 if steps >= train_steps:
                     break
-                stable, _ = network.get_stability()
                 if not stable:
                     net_alpha, _ = network.get_alpha()
+                    print('Alpha update: old {}, new {}'.format(net_alpha, net_alpha+fade_alpha))
                     network.update_alpha(net_alpha + fade_alpha)
-            print('\nEpoch {} Total Loss {} Scaled Loss {}\n'.format(epoch, epoch_loss, epoch_loss/frames_processed))
-            stable, _ = network.get_stability()
+            #stable, _ = network.get_stability()
+            print('\nTrain Epoch End: Resolution {}, Stable {}, Epoch {}, Total Loss {}, Scaled Loss {}\n'.format(current_resolution, str(stable), epoch, epoch_loss, epoch_loss/frames_processed))
+            print('Steps {}, Out of {}\n'.format(steps, int(train_steps)))
             if stable:
-                _ = eval_model(network, dev_loader, epoch)
+                curr_res_dev_loss += eval_model(network, dev_loader, current_resolution, epoch)
+                curr_res_loss += epoch_loss
             network.train()
             epoch += 1
 
-        stable, _ = network.get_stability()
-        print('Saving models...\n')
-        #torch.save(network.state_dict(), KTH_PATH+str('/model_pg_{}_{}.pth'.format(current_resolution, str(stable))))
-        #torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_pg_{}_{}.pth'.format(current_resolution, str(stable))))
+        #stable, _ = network.get_stability()
+        print('\nSaving models...\n')
+        torch.save(network.state_dict(), KTH_PATH+str('/model_pg_{}_{}.pth'.format(current_resolution, str(stable))))
+        torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_pg_{}_{}.pth'.format(current_resolution, str(stable))))
         if stable:
+            resolution_loss.append(curr_res_loss)
+            dev_loss.append(curr_res_dev_loss)
             if current_resolution >= max_resolution:
                 break
             print('Fading in next layer...\n')

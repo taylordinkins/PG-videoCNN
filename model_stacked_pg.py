@@ -102,7 +102,7 @@ class Encoder(nn.Module):
 				z = self.level_downsample_layers[train_level](x)
 				z = self.level_channel_layers_img[train_level](z)
 				z = self.level_img_bn[train_level](z)
-
+				#print('FadeEnc')
 				y = torch.add((1-self.alpha*z), self.alpha*y)
 
 			# get downsampled from previous layer
@@ -125,7 +125,7 @@ class Encoder(nn.Module):
 		return out
 
 	def update_level(self):
-		assert self.level < self.max_level
+		assert self.level < self.max_level, 'Already at max level'
 		self.level += 1
 		self.current_resolution = 2**self.level
 
@@ -220,7 +220,7 @@ class Decoder(nn.Module):
 
 			# if next level is training
 			# go left side for to img
-			if curr_level+1 == train_level:
+			if curr_level+1 == train_level and not self.stable:
 				y = self.leaky(self.level_channel_layers_img[curr_level](x))
 				y = self.level_img_bn[curr_level](y)
 			curr_level += 1
@@ -231,7 +231,9 @@ class Decoder(nn.Module):
 			if curr_level == train_level:
 				x = self.leaky(self.level_channel_layers_img[curr_level](x))
 				x = self.level_img_bn[curr_level](x)
-				x = torch.add((1-self.alpha*y), self.alpha*x)
+				if not self.stable:
+					#print('FadeDec')
+					x = torch.add((1-self.alpha*y), self.alpha*x)
 
 		x = self.leaky(self.last_deconv(x))
 		x = self.last_batch(x)
@@ -240,7 +242,7 @@ class Decoder(nn.Module):
 		return x
 
 	def update_level(self):
-		assert self.level < self.max_level
+		assert self.level < self.max_level, 'Already at max level'
 		self.level += 1
 		self.current_resolution = 2**self.level
 
