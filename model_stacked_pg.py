@@ -43,8 +43,8 @@ class Encoder(nn.Module):
 		self.next_level_downsample_layers.append(nn.AvgPool2d(2))
 		self.level_channel_layers_img.append(nn.Conv2d(32, 512, 1, stride=1))
 		self.level_img_bn.append(nn.BatchNorm2d(512))
-		self.level_conv_layers.append(nn.Conv2d(512, 512, 3, stride=1, padding=(1, 1)))
-		self.level_bn_layers.append(nn.BatchNorm2d(512))
+		self.level_conv_layers.append(nn.ModuleList([nn.Conv2d(512, 512, 3, stride=1, padding=(1, 1)), nn.Conv2d(512, 512, 3, stride=1, padding=(1, 1))]))
+		self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(512), nn.BatchNorm2d(512)]))
 
 		# start here with size 8x8
 		for curr_level in range(3, self.max_level+1):
@@ -57,8 +57,8 @@ class Encoder(nn.Module):
 			self.level_img_bn.append(nn.BatchNorm2d(curr_channels))
 
 			# utilized always except downsample on 4x4
-			self.level_conv_layers.append(nn.Conv2d(curr_channels, curr_channels*2, 3, stride=1, padding=(1, 1)))  # do more channels - right side
-			self.level_bn_layers.append(nn.BatchNorm2d(curr_channels*2))  # right side pass
+			self.level_conv_layers.append(nn.ModuleList([nn.Conv2d(curr_channels, curr_channels, 3, stride=1, padding=(1, 1)), nn.Conv2d(curr_channels, curr_channels*2, 3, stride=1, padding=(1, 1))]))  # do more channels - right side
+			self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(curr_channels), nn.BatchNorm2d(curr_channels*2)]))  # right side pass
 			self.next_level_downsample_layers.append(nn.AvgPool2d(2))  # right side pass
 		
 		# apply convolution, then linear layers
@@ -86,8 +86,10 @@ class Encoder(nn.Module):
 		y = self.leaky(self.level_channel_layers_img[train_level](x))
 		y = self.level_img_bn[train_level](y)
 		# don't need downsampling for current level 
-		y = self.leaky(self.level_conv_layers[train_level](y))
-		y = self.level_bn_layers[train_level](y)
+		y = self.leaky(self.level_conv_layers[train_level][0](y))
+		y = self.level_bn_layers[train_level][0](y)
+		y = self.leaky(self.level_conv_layers[train_level][1](y))
+		y = self.level_bn_layers[train_level][1](y)
 		#print(y.shape)
 		while train_level > 0:
 			# downsample and pass to next layer
@@ -106,8 +108,10 @@ class Encoder(nn.Module):
 				y = torch.add((1-self.alpha*z), self.alpha*y)
 
 			# get downsampled from previous layer
-			y = self.leaky(self.level_conv_layers[train_level](y))
-			y = self.level_bn_layers[train_level](y)
+			y = self.leaky(self.level_conv_layers[train_level][0](y))
+			y = self.level_bn_layers[train_level][0](y)
+			y = self.leaky(self.level_conv_layers[train_level][1](y))
+			y = self.level_bn_layers[train_level][1](y)
 			#print(y.shape)
 
 		y = self.leaky(self.last_conv(y))
@@ -164,8 +168,8 @@ class Decoder(nn.Module):
 		self.level_upsample_layers.append(nn.Upsample(scale_factor=2))
 		self.level_channel_layers_img.append(nn.ConvTranspose2d(512, 32, 1, stride=1))
 		self.level_img_bn.append(nn.BatchNorm2d(32))
-		self.level_conv_layers.append(nn.ConvTranspose2d(512, 512, 3, stride=1, padding=(1, 1)))
-		self.level_bn_layers.append(nn.BatchNorm2d(512))
+		self.level_conv_layers.append(nn.ModuleList([nn.ConvTranspose2d(512, 512, 3, stride=1, padding=(1, 1)), nn.ConvTranspose2d(512, 512, 3, stride=1, padding=(1, 1))]))
+		self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(512), nn.BatchNorm2d(512)]))
 
 		# start here with size 8x8
 		for curr_level in range(3, self.max_level+1):
@@ -181,8 +185,8 @@ class Decoder(nn.Module):
 			self.level_channel_layers_img.append(nn.ConvTranspose2d(curr_channels, 32, 1, stride=1))  # to RGB style channel conversion, left side
 			self.level_img_bn.append(nn.BatchNorm2d(32))
 
-			self.level_conv_layers.append(nn.ConvTranspose2d(curr_channels*2, curr_channels, 3, stride=1, padding=(1, 1)))  # do less channels - right side
-			self.level_bn_layers.append(nn.BatchNorm2d(curr_channels))  # right side pass
+			self.level_conv_layers.append(nn.ModuleList([nn.ConvTranspose2d(curr_channels*2, curr_channels, 3, stride=1, padding=(1, 1)), nn.ConvTranspose2d(curr_channels, curr_channels, 3, stride=1, padding=(1, 1))]))  # do less channels - right side
+			self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(curr_channels), nn.BatchNorm2d(curr_channels)]))  # right side pass
 
 		
 
@@ -202,8 +206,10 @@ class Decoder(nn.Module):
 		train_level = self.level - 2
 		curr_level = 0
 		# always run the 4x4 convolution
-		x = self.leaky(self.level_conv_layers[curr_level](x))
-		x = self.level_bn_layers[curr_level](x)
+		x = self.leaky(self.level_conv_layers[curr_level][0](x))
+		x = self.level_bn_layers[curr_level][0](x)
+		x = self.leaky(self.level_conv_layers[curr_level][1](x))
+		x = self.level_bn_layers[curr_level][1](x)
 
 		
 		if curr_level < train_level:
@@ -226,8 +232,10 @@ class Decoder(nn.Module):
 			curr_level += 1
 
 			# run next level convolution and bn
-			x = self.leaky(self.level_conv_layers[curr_level](x))
-			x = self.level_bn_layers[curr_level](x)
+			x = self.leaky(self.level_conv_layers[curr_level][0](x))
+			x = self.level_bn_layers[curr_level][0](x)
+			x = self.leaky(self.level_conv_layers[curr_level][1](x))
+			x = self.level_bn_layers[curr_level][1](x)
 			if curr_level == train_level:
 				x = self.leaky(self.level_channel_layers_img[curr_level](x))
 				x = self.level_img_bn[curr_level](x)
