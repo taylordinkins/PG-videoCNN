@@ -147,6 +147,7 @@ def main(args):
     resolution_loss = []
     dev_loss = []
     current_resolution = start_resolution
+    step_scaling_resolution = 1
     fade_alpha = args.batch_size/args.steps
 
     # loop until resolution hits max and trains on it
@@ -207,10 +208,11 @@ def main(args):
                     break
                 if not stable:
                     net_alpha, _ = network.get_alpha()
-                    print('Alpha update: old {}, new {}'.format(net_alpha, net_alpha+fade_alpha))
-                    network.update_alpha(net_alpha + fade_alpha)
+                    new_alpha = min(net_alpha + fade_alpha, 1.0)
+                    print('Alpha update: old {}, new {}'.format(net_alpha, new_alpha))
+                    network.update_alpha(new_alpha)
             #stable, _ = network.get_stability()
-            print('\nTrain Epoch End: Resolution {}, Stable {}, Epoch {}, Total Loss {}, Scaled Loss {}\n'.format(current_resolution, str(stable), epoch, epoch_loss, epoch_loss/frames_processed))
+            print('\nTrain Epoch End: Resolution {}, Stable {} \n\tEpoch {}, Total Loss {}, Scaled Loss {}\n'.format(current_resolution, str(stable), epoch, epoch_loss, epoch_loss/frames_processed))
             print('Steps {}, Out of {}\n'.format(steps, int(train_steps)))
             if stable:
                 curr_res_dev_loss += eval_model(network, dev_loader, current_resolution, epoch)
@@ -233,6 +235,9 @@ def main(args):
             network.update_level()
             current_resolution, _ = network.get_resolution()
             train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=current_resolution)
+            step_scaling_resolution += 1
+            train_steps = args.steps*step_scaling_resolution
+            fade_alpha = args.batch_size/train_steps
         else:
             print('Fading completed...\n')
             network.update_stability()
