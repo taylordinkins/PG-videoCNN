@@ -6,7 +6,7 @@
 
 
 import numpy as np
-import torch
+import torch, time, os
 from torch import nn
 import torch.nn.functional as F
 from torch.nn import init
@@ -15,17 +15,17 @@ from torch.autograd import Variable
 import argparse
 import sys
 import torchvision
-from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 from torchvision import transforms
 
-from dataset import BlockFrameDataset
+from dataset import BlockFrameDataset, MovingMNIST
 from model_stacked_pg import EncoderDecoder
+from scipy.misc import imsave
 from scipy.misc import imresize
 import random
 
 KTH_PATH = '/scratch/eecs-share/dinkinst/kth/data/'
-IMG_PATH = '/nfs/stak/users/dinkinst/Homework/videoCNN/img_stacked/'
+MMN_PATH = '/scratch/eecs-share/MovingMNIST'
 
 def load_args():
 
@@ -108,7 +108,17 @@ def fetch_mmn_data(args, shape = None):
 
     return train_loader, dev_loader, test_loader
 
+def save_image(path, np_img):
+    img_seq = []
+    vert_images = []
+    for b in range(8):
+        for f in range(np_img.shape[1]):
+            img_seq.append(np_img[b,f])
+        vert_images.append(np.hstack(img_seq))
+        img_seq = []
 
+    img = np.vstack(vert_images)
+    imsave(path, img)
 
 def eval_model(network, dev_loader, image_dir, resolution, percent_steps, epoch):
     network.eval()
@@ -137,20 +147,11 @@ def eval_model(network, dev_loader, image_dir, resolution, percent_steps, epoch)
             outputs = network(seq)
             error = criterion(outputs, seq_targ)
             batch_loss += error.cpu().item()
-            img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1)
             if (batch_num % 10 == 0 and epoch % 50 == 0) or percent_steps >= 1.0:
                 img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1).data.cpu().numpy()#.permute(0,2,3,1).data.cpu().numpy()
-                img_seq = []
-                vert_images = []
-                for b in range(8):
-                    for f in range(img_print.shape[1]):
-                        img_seq.append(img_print[b,f])
-                    vert_images.append(np.hstack(img_seq))
-                    img_seq = []
-
-                img = np.vstack(vert_images)
                 path = image_dir+'dev_output_res_{}_batch_{}_steps_{}.png'.format(resolution, batch_num, percent_steps)
-                imsave(path, img)        
+                save_image(path, img_print)
+
             batch_num += 1
             dev_loss += batch_loss
         print('Dev: Resolution {}, Steps {}, Total {}\n'.format(resolution, percent_steps, dev_loss))
@@ -260,17 +261,8 @@ def main(args):
 
                     if batch_num % 50 == 0 and epoch % 50 == 0 and stable and current_resolution > 16 and steps > 0.5:
                         img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1).data.cpu().numpy()#.permute(0,2,3,1).data.cpu().numpy()
-                        img_seq = []
-                        vert_images = []
-                        for b in range(8):
-                            for f in range(img_print.shape[1]):
-                                img_seq.append(img_print[b,f])
-                            vert_images.append(np.hstack(img_seq))
-                            img_seq = []
-
-                        img = np.vstack(vert_images)
                         path = IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable))
-                        imsave(path, img)
+                        save_image(path, img_print)
 
                     batch_num += 1
                     epoch_loss += batch_loss
@@ -278,17 +270,8 @@ def main(args):
                     steps += args.batch_size
                     if percent_steps >= 0.985:
                         img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1).data.cpu().numpy()#.permute(0,2,3,1).data.cpu().numpy()
-                        img_seq = []
-                        vert_images = []
-                        for b in range(8):
-                            for f in range(img_print.shape[1]):
-                                img_seq.append(img_print[b,f])
-                            vert_images.append(np.hstack(img_seq))
-                            img_seq = []
-
-                        img = np.vstack(vert_images)
                         path = IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable))
-                        imsave(path, img)
+                        save_image(path, img_print)
                         break
                     if not stable:
                         net_alpha, _ = network.get_alpha()
