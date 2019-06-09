@@ -74,7 +74,7 @@ class Encoder(nn.Module):
 		self.tlinear2 = nn.Linear(time_latent_size, time_latent_size)
 
 
-	def forward(self, x, t):
+	def forward(self, x):
 		# always called
 		x = self.leaky(self.first_conv(x))
 		x = self.first_batch(x)
@@ -120,17 +120,22 @@ class Encoder(nn.Module):
 		y = self.leaky(self.linear0(y))
 		y = self.linear1(y)
 
-		t = t.view(-1, 1)
-		t = self.leaky(self.tlinear0(t))
-		t = self.leaky(self.tlinear1(t))
-		t = self.tlinear2(t)
+		# t = t.view(-1, 1)
+		# t = self.leaky(self.tlinear0(t))
+		# t = self.leaky(self.tlinear1(t))
+		# t = self.tlinear2(t)
 
-		out = torch.cat((y, t), 1)
-		return out
+		# out = torch.cat((y, t), 1)
+		#return out
+		return y
 
 	def update_level(self):
 		assert self.level < self.max_level, 'Already at max level'
 		self.level += 1
+		self.current_resolution = 2**self.level
+
+	def set_level(self, level):
+		self.level = level
 		self.current_resolution = 2**self.level
 
 	def update_alpha(self, new_alpha):
@@ -151,7 +156,8 @@ class Decoder(nn.Module):
 		self.alpha = 1.0
 
 		# apply linear layers, then deconv
-		self.fc_size = latent_size + time_latent_size
+		#self.fc_size = latent_size + time_latent_size
+		self.fc_size = latent_size
 		self.linear3 = nn.Linear(self.fc_size, hidden_latent_size)
 		self.linear4 = nn.Linear(hidden_latent_size, 512*4*4)
 		self.first_deconv = nn.ConvTranspose2d(512, 512, 1, stride=1)
@@ -254,6 +260,10 @@ class Decoder(nn.Module):
 		self.level += 1
 		self.current_resolution = 2**self.level
 
+	def set_level(self, level):
+		self.level = level
+		self.current_resolution = 2**self.level
+
 	def update_alpha(self, new_alpha):
 		self.alpha = new_alpha
 
@@ -270,8 +280,13 @@ class EncoderDecoder(nn.Module):
 		self.encoder = Encoder(latent_size=latent_size, time_latent_size=time_latent_size, hidden_latent_size=hidden_latent).cuda()
 		self.decoder = Decoder(latent_size=latent_size, time_latent_size=time_latent_size, hidden_latent_size=hidden_latent).cuda()
 
-	def forward(self, x, t):
-		x = self.encoder(x, t)
+	# def forward(self, x, t):
+	# 	x = self.encoder(x, t)
+	# 	x = self.decoder(x)
+
+	# 	return x
+	def forward(self, x):
+		x = self.encoder(x)
 		x = self.decoder(x)
 
 		return x
@@ -295,6 +310,10 @@ class EncoderDecoder(nn.Module):
 
 	def get_alpha(self):
 		return self.encoder.alpha, self.decoder.alpha
+
+	def set_level(self, level):
+		self.encoder.set_level(level)
+		self.decoder.set_level(level)
 
 	def update_stability(self):
 		self.encoder.update_stability()

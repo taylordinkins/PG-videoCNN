@@ -25,7 +25,7 @@ from scipy.misc import imresize
 import random
 
 KTH_PATH = '/scratch/eecs-share/dinkinst/kth/data/'
-IMG_PATH = '/nfs/stak/users/dinkinst/Homework/videoCNN/img_stacked/'
+IMG_PATH = '/nfs/stak/users/dinkinst/Homework/videoCNN/img_stacked_nopg/'
 
 def load_args():
 
@@ -38,7 +38,7 @@ def load_args():
     parser.add_argument('--lr', default=0.0005, type=float)
     parser.add_argument('--output', default=4096, type=int)
     parser.add_argument('--dataset', default='kth', type=str)
-    parser.add_argument('--steps', default=1200000, type=int)
+    parser.add_argument('--steps', default=3000000, type=int)
     parser.add_argument('--start_resolution', default=4, type=int)
     parser.add_argument('--max_resolution', default=128, type=int)
 
@@ -110,7 +110,6 @@ def eval_model(network, dev_loader, resolution, percent_steps, epoch):
             
 
 
-            #outputs = network(seq, time_delta)
             outputs = network(seq)
             error = criterion(outputs, seq_targ)
             batch_loss += error.cpu().item()
@@ -133,6 +132,7 @@ def main(args):
     ms_per_frame = 40
 
     network = EncoderDecoder(args).cuda()
+    network.set_level(7)
     optimizer = torch.optim.Adam(network.parameters(), lr=args.lr, betas=(0.9, 0.99))
     #optimizer = torch.optim.RMSprop(network.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
@@ -140,7 +140,7 @@ def main(args):
     start_resolution = args.start_resolution
     max_resolution = args.max_resolution
     train_steps = int(args.steps)
-    train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=start_resolution)
+    train_loader, dev_loader, test_loader = fetch_kth_data(args, shape=max_resolution)
 
     # test_tens = next(iter(train_loader))['instance'][0, :, :, :, :].transpose(0, 1)
     # print(test_tens.shape)
@@ -148,7 +148,7 @@ def main(args):
     # print(next(iter(train_loader))['instance'][0, :, 0, :, :].shape)
     resolution_loss = []
     dev_loss = []
-    current_resolution = start_resolution
+    current_resolution = args.max_resolution
     step_scaling_resolution = 1
     fade_alpha = args.batch_size/args.steps
 
@@ -180,7 +180,6 @@ def main(args):
                     j = start_frame+10
                     seq_targ = item[:, :, j, :, :]
 
-                    #outputs = network(seq, time_delta)
                     outputs = network(seq)
                     #print(seq.shape)
                     #print(outputs.shape)
@@ -193,7 +192,7 @@ def main(args):
                     img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1)
                     #print(seq[:8, :, :, :].shape, outputs[:8, :, :, :].shape, img_print.shape)
                     percent_steps = steps/train_steps
-                    if batch_num % 50 == 0 and epoch % 50 == 0 and stable and current_resolution > 16 and steps > 0.5:
+                    if batch_num % 50 == 0 and epoch % 50 == 0:
                         for indx in range(img_print.shape[0]):  
                             save_image(img_print[indx].unsqueeze(1), IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable), indx))
 
@@ -201,7 +200,7 @@ def main(args):
                     epoch_loss += batch_loss
                     #stable, _ = network.get_stability()
                     steps += args.batch_size
-                    if percent_steps >= 0.985:
+                    if steps >= train_steps:
                         for indx in range(img_print.shape[0]):  
                             save_image(img_print[indx].unsqueeze(1), IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable), indx))
                         break
@@ -221,8 +220,8 @@ def main(args):
 
         #stable, _ = network.get_stability()
         print('\nSaving models...\n')
-        torch.save(network.state_dict(), KTH_PATH+str('/model_pg_{}_{}.pth'.format(current_resolution, str(stable))))
-        torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_pg_{}_{}.pth'.format(current_resolution, str(stable))))
+        torch.save(network.state_dict(), KTH_PATH+str('/model_pg_{}_{}_nopg.pth'.format(current_resolution, str(stable))))
+        torch.save(optimizer.state_dict(), KTH_PATH+str('/optim_pg_{}_{}_nopg.pth'.format(current_resolution, str(stable))))
         if stable:
             resolution_loss.append(curr_res_loss)
             dev_loss.append(curr_res_dev_loss)
