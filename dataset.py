@@ -87,7 +87,7 @@ class BlockFrameDataset(Dataset):
         self.instances = self.instances / float(255)
 
     def read_dataset(self, directory, dataset="train", mean=None):
-        desired_categories = [4, 5]
+        desired_categories = [0,1,2,3,4, 5]
 
         if dataset == "train":
             filepath = os.path.join(directory, "train.p")
@@ -123,113 +123,196 @@ class BlockFrameDataset(Dataset):
         
         return instances, labels
 
-# class BlockFrameFlowDataset(Dataset):
-#     def __init__(self, directory, dataset="train", mean=None):
-#         self.instances, self.labels = self.read_dataset(directory, dataset)
+     
+class MovingMNIST(Dataset):
+    """`MovingMNIST <http://www.cs.toronto.edu/~nitish/unsupervised_video/>`_ Dataset.
 
-#         for i in range(len(self.instances)):
-#             self.instances[i]["frames"] = torch.from_numpy(
-#                 self.instances[i]["frames"])
-#             self.instances[i]["flow_x"] = torch.from_numpy(
-#                 self.instances[i]["flow_x"])
-#             self.instances[i]["flow_y"] = torch.from_numpy(
-#                 self.instances[i]["flow_y"])
+    Args:
+        root (string): Root directory of dataset where ``processed/training.pt``
+            and  ``processed/test.pt`` exist.
+        train (bool, optional): If True, creates dataset from ``training.pt``,
+            otherwise from ``test.pt``.
+        split (int, optional): Train/test split size. Number defines how many samples
+            belong to test set. 
+        download (bool, optional): If true, downloads the dataset from the internet and
+            puts it in root directory. If dataset is already downloaded, it is not
+            downloaded again.
+        transform (callable, optional): A function/transform that takes in an PIL image
+            and returns a transformed version. E.g, ``transforms.RandomCrop``
+        target_transform (callable, optional): A function/transform that takes in an PIL
+            image and returns a transformed version. E.g, ``transforms.RandomCrop``
+    """
+    urls = [
+        'https://github.com/tychovdo/MovingMNIST/raw/master/mnist_test_seq.npy.gz'
+    ]
+    raw_folder = 'raw'
+    processed_folder = 'processed'
+    training_file = 'moving_mnist_train.pt'
+    test_file = 'moving_mnist_test.pt'
 
-#         self.labels = torch.from_numpy(self.labels)
+    def __init__(self, root, train=True, split=1000, transform=None, target_transform=None, download=False, shape=None):
+        self.root = os.path.expanduser(root)
+        self.transform = transform
+        self.target_transform = target_transform
+        self.split = split
+        self.train = train  # training set or test set
+        self.shape = shape
 
-#     def __len__(self):
-#         return len(self.instances)
 
-#     def __getitem__(self, idx):
-#         sample = { 
-#             "instance": self.instances[idx], 
-#             "label": self.labels[idx] 
-#         }
+        if download:
+            self.download()
 
-#         return sample
+        if not self._check_exists():
+            raise RuntimeError('Dataset not found.' +
+                               ' You can use download=True to download it')
 
-#     def zero_center(self, mean):
-#         for i in range(len(self.instances)):
-#             self.instances[i]["frames"] -= float(mean["frames"])
-#             self.instances[i]["flow_x"] -= float(mean["flow_x"])
-#             self.instances[i]["flow_y"] -= float(mean["flow_y"])
+        if train:
+            self.train_data = self.read_dataset()
+        else:
+            self.test_data = self.read_dataset()
 
-#     def read_dataset(self, directory, dataset="train", mean=None):
-#         if dataset == "train":
-#             frame_path = os.path.join(directory, "train.p")
-#             flow_path = os.path.join(directory, "train_flow.p")
-#         elif dataset == "dev":
-#             frame_path = os.path.join(directory, "dev.p")
-#             flow_path = os.path.join(directory, "dev_flow.p")
-#         else:
-#             frame_path = os.path.join(directory, "test.p")
-#             flow_path = os.path.join(directory, "test_flow.p")
+    def __getitem__(self, idx):
 
-#         video_frames = pickle.load(open(frame_path, "rb"))
-#         video_flows = pickle.load(open(flow_path, "rb"))
+        if self.train:
+            sample = { 
+                "instance": self.train_data[idx], 
+                "label": "" 
+            }
+        else:
+            sample = { 
+                "instance":  self.test_data[idx], 
+                "label": "" 
+            }
 
-#         instances = []
-#         labels = []
+        return sample
 
-#         mean_frames = 0
-#         mean_flow_x = 0
-#         mean_flow_y = 0
+    def zero_center(self, mean):
+        self.instances -= float(mean)
 
-#         for i_video in range(len(video_frames)):
-#             current_block_frame = []
-#             current_block_flow_x = []
-#             current_block_flow_y = []
+    def normalize(self):
+        self.instances = self.instances / float(255)
 
-#             frames = video_frames[i_video]["frames"]
-#             flow_x = [0] + video_flows[i_video]["flow_x"]
-#             flow_y = [0] + video_flows[i_video]["flow_y"]
+    def read_dataset(self, mean=None):
 
-#             for i_frame in range(len(frames)):
-#                 current_block_frame.append(frames[i_frame])
+        full_set = np.load(os.path.join(self.root, self.raw_folder, 'mnist_test_seq.npy')).swapaxes(0, 1)#[:-self.split]
 
-#                 if i_frame % 15 > 0:
-#                     current_block_flow_x.append(flow_x[i_frame])
-#                     current_block_flow_y.append(flow_y[i_frame])
+        instances = []
+        for video in full_set:
+            current_block = []
+            for i, frame in enumerate(video):
+                if self.shape:
+                    frame = imresize(frame, size=(self.shape, self.shape))
+                current_block.append(frame)
 
-#                 if (i_frame + 1) % 15 == 0:
-#                     current_block_frame = np.array(
-#                         current_block_frame,
-#                         dtype=np.float32).reshape((1, 15, 60, 80))
-#                     current_block_flow_x = np.array(
-#                         current_block_flow_x,
-#                         dtype=np.float32).reshape((1, 14, 30, 40))
-#                     current_block_flow_y = np.array(
-#                         current_block_flow_y,
-#                         dtype=np.float32).reshape((1, 14, 30, 40))
+            current_block = np.array(current_block)
+            if self.shape:
+                instances.append(current_block.reshape((1, 20, self.shape, self.shape)))
+            else:
+                instances.append(current_block.reshape((1, 20, 128, 128)))
 
-#                     mean_frames += np.mean(current_block_frame)
-#                     mean_flow_x += np.mean(current_block_flow_x)
-#                     mean_flow_y += np.mean(current_block_flow_y)
 
-#                     instances.append({
-#                         "frames": current_block_frame,
-#                         "flow_x": current_block_flow_x,
-#                         "flow_y": current_block_flow_y
-#                     })
+        instances = np.array(instances, dtype=np.float32)
 
-#                     labels.append(
-#                         CATEGORY_INDEX[video_frames[i_video]["category"]])
+        #train = instances[:-self.split]
+        #test = instances[-self.split:]
 
-#                     current_block_frame = []
-#                     current_block_flow_x = []
-#                     current_block_flow_y = []
+        self.instances = instances[:-self.split] if self.train else instances[-self.split:]
+        self.mean = np.mean(self.instances)
+        
+        return torch.from_numpy(self.instances)
 
-#         mean_frames /= len(instances)
-#         mean_flow_x /= len(instances)
-#         mean_flow_y /= len(instances)
+    #def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
 
-#         self.mean = {
-#             "frames": mean_frames,
-#             "flow_x": mean_flow_x,
-#             "flow_y": mean_flow_y
-#         }
+        Returns:
+            tuple: (seq, target) where sampled sequences are splitted into a seq
+                    and target part
+        """
+        #if self.train:
+        #    seq, target = self.train_data[index, :], self.train_data[index, :]
+        #else:
+        #    seq, target = self.test_data[index, :], self.test_data[index, :]
 
-#         labels = np.array(labels, dtype=np.uint8)
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        # seq = Image.fromarray(seq.numpy(), mode='L')
+        # target = Image.fromarray(target.numpy(), mode='L')
 
-#         return instances, labels
+        # if self.transform is not None:
+        #     seq = self.transform(seq)
 
+        # if self.target_transform is not None:
+        #     target = self.target_transform(target)
+
+        #return seq, target
+
+    def __len__(self):
+        if self.train:
+            return len(self.train_data)
+        else:
+            return len(self.test_data)
+
+    def _check_exists(self):
+        return os.path.exists(os.path.join(self.root, self.processed_folder, self.training_file)) and \
+            os.path.exists(os.path.join(self.root, self.processed_folder, self.test_file))
+
+    def download(self):
+        """Download the Moving MNIST data if it doesn't exist in processed_folder already."""
+        from six.moves import urllib
+        import gzip
+
+        if self._check_exists():
+            return
+
+        # download files
+        try:
+            os.makedirs(os.path.join(self.root, self.raw_folder))
+            os.makedirs(os.path.join(self.root, self.processed_folder))
+        except OSError as e:
+            if e.errno == errno.EEXIST:
+                pass
+            else:
+                raise
+
+        for url in self.urls:
+            print('Downloading ' + url)
+            data = urllib.request.urlopen(url)
+            filename = url.rpartition('/')[2]
+            file_path = os.path.join(self.root, self.raw_folder, filename)
+            with open(file_path, 'wb') as f:
+                f.write(data.read())
+            with open(file_path.replace('.gz', ''), 'wb') as out_f, \
+                    gzip.GzipFile(file_path) as zip_f:
+                out_f.write(zip_f.read())
+            os.unlink(file_path)
+
+        # process and save as torch files
+        print('Processing...')
+
+        training_set = torch.from_numpy(
+            np.load(os.path.join(self.root, self.raw_folder, 'mnist_train_seq.npy')).swapaxes(0, 1)[:-self.split]
+        )
+        test_set = torch.from_numpy(
+            np.load(os.path.join(self.root, self.raw_folder, 'mnist_test_seq.npy')).swapaxes(0, 1)[-self.split:]
+        )
+
+        with open(os.path.join(self.root, self.processed_folder, self.training_file), 'wb') as f:
+            torch.save(training_set, f)
+        with open(os.path.join(self.root, self.processed_folder, self.test_file), 'wb') as f:
+            torch.save(test_set, f)
+
+        print('Done!')
+
+    def __repr__(self):
+        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
+        fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
+        tmp = 'train' if self.train is True else 'test'
+        fmt_str += '    Train/test: {}\n'.format(tmp)
+        fmt_str += '    Root Location: {}\n'.format(self.root)
+        tmp = '    Transforms (if any): '
+        fmt_str += '{0}{1}\n'.format(tmp, self.transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
+        tmp = '    Target Transforms (if any): '
+        fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
+        return fmt_str
