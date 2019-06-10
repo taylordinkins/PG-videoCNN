@@ -41,6 +41,7 @@ def load_args():
     parser.add_argument('--steps', default=1200000, type=int)
     parser.add_argument('--start_resolution', default=4, type=int)
     parser.add_argument('--max_resolution', default=128, type=int)
+    parser.add_argument('--grow', default=1, type=int)
 
     args = parser.parse_args()
 
@@ -164,6 +165,20 @@ def get_data_loaders(args, current_resolution):
     else:
         return fetch_mmn_data(args, shape=current_resolution)
 
+def save_graph_data(save_dir, start_time, cur_loss, image_count_shown):
+
+    elapsed_mins = round((time.time() - start_time)) / 60
+    #save current_time & loss to a file
+    save_string = "{:0.2f},{}".format(elapsed_mins,cur_loss)
+    f=open(save_dir+'loss_log.txt','a')
+    f.write(save_string+'\n') ; 
+    f.close()
+    
+    #save current time & image count shown 
+    save_string = "{:0.2f},{}".format(elapsed_mins,image_count_shown)
+    f=open(save_dir+'images_show_log.txt','a')
+    f.write(save_string+'\n') ; 
+    f.close()
 
 # 40ms is diff between one frame
 def main(args):
@@ -187,34 +202,42 @@ def main(args):
 
     if args.dataset == 'kth':
         dataset_frames = 15
-        save_dir = SAVE_PATH + 'kth/'
+        save_dir = SAVE_PATH + 'kth_grow{}/'.format(str(args.grow))
         max_resolution=128
     else:
         dataset_frames = 20
         max_resolution=64
-        save_dir = SAVE_PATH + 'mmnist/'
+        save_dir = SAVE_PATH + 'mmnist_grow{}/'.format(str(args.grow))
 
-
-    train_loader, dev_loader, test_loader = get_data_loaders(args, start_resolution)
-        
 
     IMG_PATH = save_dir + 'img_stacked/'
     os.makedirs(save_dir , exist_ok=True)
     os.makedirs(IMG_PATH , exist_ok=True)
-    # test_tens = next(iter(train_loader))['instance'][0, :, :, :, :].transpose(0, 1)
-    # print(test_tens.shape)
-    # save_image(test_tens, './img/test_tens.png')
-    # print(next(iter(train_loader))['instance'][0, :, 0, :, :].shape)
+
+    #clear the log files
+    open(save_dir+'images_show_log.txt', 'w').close()
+    open(save_dir+'loss_log.txt', 'w').close()
+
+    total_steps_possible = ((train_steps * 2) * ((np.log2(max_resolution) - np.log2(start_resolution)))) - train_steps
+    total_steps = 0
+
     resolution_loss = []
     dev_loss = []
     current_resolution = start_resolution
     step_scaling_resolution = 1
     fade_alpha = args.batch_size/args.steps
 
-    total_steps_possible = ((train_steps * 2) * (np.log2(max_resolution) - np.log2(start_resolution))) - train_steps
-    total_steps = 0
+    if args.grow == 0:
+        train_steps = total_steps_possible
+        current_resolution = max_resolution
+        network.set_level(current_resolution)
+
+    train_loader, dev_loader, test_loader = get_data_loaders(args, current_resolution)
+        
 
     print("Models and datasets loaded")
+    start_time = time.time()
+
     # loop until resolution hits max and trains on it
     while current_resolution <= max_resolution:
         print('Current resolution {}'.format(current_resolution))
@@ -242,8 +265,6 @@ def main(args):
                     seq_targ = item[:, :, start_frame+input_frames, :, :]
 
                     outputs = network(seq)
-                    #print(seq.shape)
-                    #print(outputs.shape)
                     error = criterion(outputs, seq_targ)
                     error.backward()
                     optimizer.step()
@@ -251,23 +272,25 @@ def main(args):
                     loss = error.cpu().item()
 
                     batch_loss += loss
-                    #stable, _ = network.get_stability()
-                    #print(seq[:8, :, :, :].shape, outputs[:8, :, :, :].shape, img_print.shape)
                     percent_steps = steps/train_steps
-                    total_steps += 1
+                    total_steps += args.batch_size
+
+                    batch_num += 1
+                    epoch_loss += batch_loss
+                    steps += args.batch_size
 
                     if batch_num % 50 == 0:
                         print("{} RES {}, cur% {:0.2f}, total% {:0.1f}, loss {:0.4f} ".format("Stable" if stable else "Fading", current_resolution, percent_steps * 100, (total_steps/total_steps_possible) *100, loss))
+                    if batch_num % 200 == 0:    
+                        save_graph_data(save_dir, start_time, loss, total_steps)
 
                     if batch_num % 50 == 0 and epoch % 50 == 0 and stable and current_resolution > 16 and steps > 0.5:
                         img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1).data.cpu().numpy()#.permute(0,2,3,1).data.cpu().numpy()
                         path = IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable))
                         save_image(path, img_print)
 
-                    batch_num += 1
-                    epoch_loss += batch_loss
-                    #stable, _ = network.get_stability()
-                    steps += args.batch_size
+
+                    
                     if percent_steps >= 0.985:
                         img_print = torch.cat((seq[:8, :, :, :], outputs[:8, :, :, :]), dim=1).data.cpu().numpy()#.permute(0,2,3,1).data.cpu().numpy()
                         path = IMG_PATH+'train_output_res_{}_batch_{}_steps_{}_stable_{}.png'.format(current_resolution, batch_num, percent_steps, str(stable))
