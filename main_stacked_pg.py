@@ -47,7 +47,7 @@ def load_args():
     parser.add_argument('--hidden_latent', default=1024, type=int)
     parser.add_argument('--latent_size', default=512, type=int)
     parser.add_argument('--time_latent', default=64, type=int)
-    parser.add_argument('--lr', default=0.0005, type=float)
+    parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--output', default=4096, type=int)
     parser.add_argument('--dataset', default='kth', type=str)
     parser.add_argument('--steps', default=800000, type=int)
@@ -186,6 +186,7 @@ def main(args):
         print('Current resolution {}'.format(current_resolution))
         stable, _ = network.get_stability()
         steps = 0
+        disc_alpha = 0.0
         epoch = 0
         curr_res_loss = 0
         curr_res_dev_loss = 0
@@ -235,7 +236,9 @@ def main(args):
                     #print(seq.shape)
                     #print(outputs.shape)
                     error = criterion(outputs, seq_targ)
-                    g_error = netD(outputs).mean()
+                    g_error = netD(outputs).mean()*disc_alpha
+                    disc_alpha += fade_alpha
+                    disc_alpha = min(disc_alpha, 1.0)
                     g_error.backward(mone, retain_graph=True)
                     error.backward()
                     optimizer.step()
@@ -277,7 +280,7 @@ def main(args):
         print('\nSaving models...\n')
         torch.save(network.state_dict(), SAVE_PATH+str('/model_pg_{}_{}.pth'.format(current_resolution, str(stable))))
         torch.save(optimizer.state_dict(), SAVE_PATH+str('/optim_pg_{}_{}.pth'.format(current_resolution, str(stable))))
-        torch.save(netD.state_dict(), SAVE_PATH+str('/model_pg_D_{}_{}.pth'.fotmat(current_resolution, str(stable))))
+        torch.save(netD.state_dict(), SAVE_PATH+str('/model_pg_D_{}_{}.pth'.format(current_resolution, str(stable))))
         torch.save(optimD.state_dict(), SAVE_PATH+str('optim_pg_D_{}_{}.pth'.format(current_resolution, str(stable))))
         if stable:
             resolution_loss.append(curr_res_loss)
