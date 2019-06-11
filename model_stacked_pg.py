@@ -270,6 +270,141 @@ class Decoder(nn.Module):
 	def update_stability(self):
 		self.stable = not self.stable
 
+class Discriminator(nn.Module):
+	def __init__(self, resolution=128, latent_size=2048, time_latent_size=64, hidden_latent_size=1024):
+		super(Discriminator, self).__init__()
+		self.latent_size = latent_size
+		self.leaky = nn.LeakyReLU(0.2, inplace=True)
+		self.max_resolution = resolution
+		self.max_level = int(math.log2(resolution))
+
+		self.first_conv = nn.Conv2d(1, 32, 1, stride=1)  # initial 1x1 convolution to 32 channels
+		self.first_batch = nn.BatchNorm2d(32)
+		self.first_conv_two = nn.Conv2d(32, 32, 3, stride=1, padding=(1,1))  # initial 3x3 convolution to 32 channels
+		self.first_batch_two = nn.BatchNorm2d(32)
+
+		self.level = 2
+		self.current_resolution = 2**self.level
+		self.stable = True
+		self.alpha = 1.0
+		# 32x128x128
+
+		# define for first 4x4 layer
+		# difference is no output downsample
+		self.level_downsample_layers = nn.ModuleList()
+		self.next_level_downsample_layers = nn.ModuleList()
+		self.level_channel_layers_img = nn.ModuleList()
+		self.level_img_bn = nn.ModuleList()
+		self.level_conv_layers = nn.ModuleList()
+		self.level_bn_layers = nn.ModuleList()
+
+		self.level_downsample_layers.append(nn.AvgPool2d(2))
+		self.next_level_downsample_layers.append(nn.AvgPool2d(2))
+		self.level_channel_layers_img.append(nn.Conv2d(32, 512, 1, stride=1))
+		self.level_img_bn.append(nn.BatchNorm2d(512))
+		self.level_conv_layers.append(nn.ModuleList([nn.Conv2d(512, 512, 3, stride=1, padding=(1, 1)), nn.Conv2d(512, 512, 3, stride=1, padding=(1, 1))]))
+		self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(512), nn.BatchNorm2d(512)]))
+
+		# start here with size 8x8
+		for curr_level in range(3, self.max_level+1):
+			curr_channels = level_channels_mapping[curr_level]
+			higher_channels = level_channels_mapping[curr_level+1]
+			curr_resolution = 2**curr_level
+			# faded out
+			self.level_downsample_layers.append(nn.AvgPool2d(2))  # run this before doing the level channel conversion (left side, faded out)
+			self.level_channel_layers_img.append(nn.Conv2d(32, curr_channels, 1, stride=1))  # from RGB style channel conversion, left side
+			self.level_img_bn.append(nn.BatchNorm2d(curr_channels))
+
+			# utilized always except downsample on 4x4
+			self.level_conv_layers.append(nn.ModuleList([nn.Conv2d(curr_channels, curr_channels, 3, stride=1, padding=(1, 1)), nn.Conv2d(curr_channels, curr_channels*2, 3, stride=1, padding=(1, 1))]))  # do more channels - right side
+			self.level_bn_layers.append(nn.ModuleList([nn.BatchNorm2d(curr_channels), nn.BatchNorm2d(curr_channels*2)]))  # right side pass
+			self.next_level_downsample_layers.append(nn.AvgPool2d(2))  # right side pass
+		
+		# apply convolution, then linear layers
+		self.last_conv = nn.Conv2d(512, 512, 1)
+		self.last_bn = nn.BatchNorm2d(512)
+		self.wconv = nn.Conv2d(512, 1, 4, stride=1, padding=0, bias=False)
+		# self.hidden_units = 512*4*4
+
+		# self.linear0 = nn.Linear(self.hidden_units, hidden_latent_size)
+		# self.linear1 = nn.Linear(hidden_latent_size, latent_size)
+
+		# self.tlinear0 = nn.Linear(1, time_latent_size)
+		# self.tlinear1 = nn.Linear(time_latent_size, time_latent_size)
+		# self.tlinear2 = nn.Linear(time_latent_size, time_latent_size)
+
+
+	def forward(self, x):
+		# always called
+		x = self.leaky(self.first_conv(x))
+		x = self.first_batch(x)
+		x = self.leaky(self.first_conv_two(x))
+		x = self.first_batch_two(x)
+
+		train_level = self.level - 2
+		# called for whichever level is currently training
+		y = self.leaky(self.level_channel_layers_img[train_level](x))
+		y = self.level_img_bn[train_level](y)
+		# don't need downsampling for current level 
+		y = self.leaky(self.level_conv_layers[train_level][0](y))
+		y = self.level_bn_layers[train_level][0](y)
+		y = self.leaky(self.level_conv_layers[train_level][1](y))
+		y = self.level_bn_layers[train_level][1](y)
+		#print(y.shape)
+		while train_level > 0:
+			# downsample and pass to next layer
+			y = self.next_level_downsample_layers[train_level](y)
+
+			# update train_level
+			train_level = train_level - 1
+
+			# faded out
+			if not self.stable and train_level == self.level - 3:
+				# next layer gets downsampled img input
+				z = self.level_downsample_layers[train_level](x)
+				z = self.level_channel_layers_img[train_level](z)
+				z = self.level_img_bn[train_level](z)
+				#print('FadeEnc')
+				y = torch.add((1-self.alpha*z), self.alpha*y)
+
+			# get downsampled from previous layer
+			y = self.leaky(self.level_conv_layers[train_level][0](y))
+			y = self.level_bn_layers[train_level][0](y)
+			y = self.leaky(self.level_conv_layers[train_level][1](y))
+			y = self.level_bn_layers[train_level][1](y)
+			#print(y.shape)
+
+		# y = self.leaky(self.last_conv(y))
+		# y = self.last_bn(self.last_bn(y))
+		# y = y.view(-1, self.hidden_units)
+		# y = self.leaky(self.linear0(y))
+		# y = self.linear1(y)
+		y = self.wconv(y).view(-1, 1)
+		# t = t.view(-1, 1)
+		# t = self.leaky(self.tlinear0(t))
+		# t = self.leaky(self.tlinear1(t))
+		# t = self.tlinear2(t)
+
+		# out = torch.cat((y, t), 1)
+		#return out
+		return y
+
+	def update_level(self):
+		assert self.level < self.max_level, 'Already at max level'
+		self.level += 1
+		self.current_resolution = 2**self.level
+
+	def set_level(self, level):
+		self.level = level
+		self.current_resolution = 2**self.level
+
+	def update_alpha(self, new_alpha):
+		self.alpha = new_alpha
+
+	def update_stability(self):
+		self.stable = not self.stable
+
+
 
 class EncoderDecoder(nn.Module):
 	def __init__(self, args):
@@ -318,5 +453,3 @@ class EncoderDecoder(nn.Module):
 	def update_stability(self):
 		self.encoder.update_stability()
 		self.decoder.update_stability()
-
-
