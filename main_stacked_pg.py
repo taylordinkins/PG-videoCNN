@@ -218,7 +218,7 @@ def main(args):
     open(save_dir+'images_show_log.txt', 'w').close()
     open(save_dir+'loss_log.txt', 'w').close()
 
-    total_steps_possible = ((train_steps * 2) * ((np.log2(max_resolution) - np.log2(start_resolution)))) - train_steps
+    total_steps_possible = ((train_steps * 2) * ((np.log2(max_resolution) - np.log2(start_resolution)))) + train_steps
     total_steps = 0
 
     resolution_loss = []
@@ -230,7 +230,7 @@ def main(args):
     if args.grow == 0:
         train_steps = total_steps_possible
         current_resolution = max_resolution
-        network.set_level(current_resolution)
+        network.set_level(int(np.log2(current_resolution)))
 
     train_loader, dev_loader, test_loader = get_data_loaders(args, current_resolution)
         
